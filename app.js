@@ -10,28 +10,6 @@ const STORAGE_KEY = "espanol_srs_cards_v1";
 const DECKS_KEY = "espanol_srs_decks_v1";
 const META_KEY = "espanol_srs_meta_v1";
 
-// ---------- Початкова колода (щоб було з чим одразу вчитися) ----------
-const SEED_DECK_ID = "seed-deck-a1";
-
-const SEED_CARDS = [
-  ["hola", "привіт", "¡Hola! ¿Cómo estás?"],
-  ["gracias", "дякую", "Muchas gracias por tu ayuda."],
-  ["por favor", "будь ласка", "Un café, por favor."],
-  ["buenos días", "доброго ранку", "Buenos días, ¿qué tal?"],
-  ["el agua", "вода", "Necesito un vaso de agua."],
-  ["la comida", "їжа", "La comida está lista."],
-  ["el amigo / la amiga", "друг / подруга", "Es mi mejor amigo."],
-  ["la casa", "дім", "Vivo en una casa pequeña."],
-  ["el trabajo", "робота", "Mañana tengo mucho trabajo."],
-  ["comer", "їсти", "Me gusta comer paella."],
-  ["hablar", "говорити", "¿Hablas español?"],
-  ["el tiempo", "час / погода", "No tengo tiempo hoy."],
-  ["la familia", "сім'я", "Mi familia es grande."],
-  ["el libro", "книга", "Estoy leyendo un libro interesante."],
-  ["viajar", "подорожувати", "Quiero viajar a España."],
-  ["la ciudad", "місто", "Madrid es una ciudad hermosa."],
-];
-
 function todayStr(offsetDays = 0) {
   const d = new Date();
   d.setDate(d.getDate() + offsetDays);
@@ -85,15 +63,16 @@ function parseBulkText(text) {
 }
 
 // ---------- Зберігання: колоди ----------
+// Жодних дефолтних колод — застосунок стартує повністю порожнім,
+// користувач сам створює свої колоди.
 function loadDecks() {
   try {
     const raw = localStorage.getItem(DECKS_KEY);
     if (!raw) throw new Error("no decks yet");
     return JSON.parse(raw);
   } catch (e) {
-    const seeded = [{ id: SEED_DECK_ID, name: "Основи (A1)", createdAt: Date.now() }];
-    saveDecks(seeded);
-    return seeded;
+    saveDecks([]);
+    return [];
   }
 }
 
@@ -109,17 +88,22 @@ function loadCards() {
     if (!raw) throw new Error("no data yet");
     loaded = JSON.parse(raw);
   } catch (e) {
-    loaded = SEED_CARDS.map((c) => makeCard(c[0], c[1], c[2], SEED_DECK_ID));
-    saveCards(loaded);
-    return loaded;
+    saveCards([]);
+    return [];
   }
 
   // Міграція: якщо картки збережені ще до появи колод (немає deckId),
-  // прив'язуємо їх до першої наявної колоди, щоб нічого не загубилось.
+  // прив'язуємо їх до першої наявної колоди (або створюємо запасну),
+  // щоб нічого не загубилось.
   const needsMigration = loaded.some((c) => !c.deckId);
   if (needsMigration) {
-    const decks = loadDecks();
-    const fallbackDeckId = decks[0]?.id || SEED_DECK_ID;
+    let decks = loadDecks();
+    if (decks.length === 0) {
+      const fallback = makeDeck("Імпортовані картки");
+      decks = [fallback];
+      saveDecks(decks);
+    }
+    const fallbackDeckId = decks[0].id;
     loaded = loaded.map((c) => (c.deckId ? c : { ...c, deckId: fallbackDeckId }));
     saveCards(loaded);
   }
@@ -210,10 +194,14 @@ function previewInterval(card, rating) {
 let decks = loadDecks();
 let cards = loadCards();
 let currentTab = "study";
-let studyDeckId = "all"; // "all" або id конкретної колоди
+
+// studyView: { mode: "gallery" } — вибір колоди для навчання
+//         або { mode: "session", deckId } — сама сесія навчання
+let studyView = { mode: "gallery" };
 let studyQueue = [];
 let currentCardIndex = 0;
 let isFlipped = false;
+
 let manageView = { mode: "list" }; // { mode: "list" } або { mode: "detail", deckId }
 let addSubTab = "single"; // "single" або "bulk" — режим форми додавання карток
 
@@ -226,9 +214,9 @@ function dueCards(scopeId) {
   return cardsInScope(scopeId).filter((c) => c.dueDate <= today);
 }
 
-function refreshQueueIfNeeded() {
+function refreshQueueIfNeeded(deckId) {
   if (studyQueue.length === 0) {
-    studyQueue = dueCards(studyDeckId).map((c) => c.id);
+    studyQueue = dueCards(deckId).map((c) => c.id);
     currentCardIndex = 0;
   }
 }
@@ -237,8 +225,12 @@ function refreshQueueIfNeeded() {
 const app = document.getElementById("app");
 
 function render() {
-  const due = dueCards(studyDeckId);
-  const scopedCards = cardsInScope(studyDeckId);
+  let scopeId = "all";
+  if (currentTab === "study" && studyView.mode === "session") scopeId = studyView.deckId;
+  if (currentTab === "manage" && manageView.mode === "detail") scopeId = manageView.deckId;
+
+  const due = dueCards(scopeId);
+  const scopedCards = cardsInScope(scopeId);
   const mastered = scopedCards.filter((c) => c.interval >= 21).length;
   const meta = loadMeta();
 
@@ -275,32 +267,84 @@ function render() {
 
 function renderStudy() {
   const container = document.getElementById("tabContent");
-  refreshQueueIfNeeded();
+  if (studyView.mode === "gallery") {
+    renderStudyGallery(container);
+  } else {
+    renderStudySession(container, studyView.deckId);
+  }
+}
 
-  const deckOptions = `
-    <option value="all" ${studyDeckId === "all" ? "selected" : ""}>Усі колоди</option>
-    ${decks
-      .map((d) => `<option value="${d.id}" ${studyDeckId === d.id ? "selected" : ""}>${escapeHtml(d.name)}</option>`)
-      .join("")}
-  `;
+function renderStudyGallery(container) {
+  const today = todayStr(0);
 
-  const deckSelectorHtml = `
-    <div class="deck-select-row">
-      <label for="studyDeckSelect">Колода для навчання</label>
-      <select id="studyDeckSelect">${deckOptions}</select>
+  if (decks.length === 0) {
+    container.innerHTML = `
+      <div class="study-empty">
+        <span class="big-emoji">📚</span>
+        <h2>Ще немає жодної колоди</h2>
+        <p>Перейди у вкладку «Колоди», щоб створити першу — а потім повертайся сюди навчатись.</p>
+      </div>
+    `;
+    return;
+  }
+
+  container.innerHTML = `
+    <p class="gallery-title">Обери колоду для навчання</p>
+    <div class="deck-gallery">
+      ${decks
+        .slice()
+        .sort((a, b) => b.createdAt - a.createdAt)
+        .map((d) => {
+          const deckCards = cards.filter((c) => c.deckId === d.id);
+          const deckDue = deckCards.filter((c) => c.dueDate <= today).length;
+          return `
+          <button class="gallery-tile" data-id="${d.id}">
+            <span class="gallery-tile-name">${escapeHtml(d.name)}</span>
+            <span class="gallery-tile-meta">${deckCards.length} карток</span>
+            ${
+              deckDue > 0
+                ? `<span class="gallery-tile-badge">${deckDue} на сьогодні</span>`
+                : `<span class="gallery-tile-badge gallery-tile-badge-done">Все повторено</span>`
+            }
+          </button>`;
+        })
+        .join("")}
     </div>
   `;
 
+  container.querySelectorAll(".gallery-tile").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      studyView = { mode: "session", deckId: btn.dataset.id };
+      studyQueue = [];
+      currentCardIndex = 0;
+      isFlipped = false;
+      render();
+    });
+  });
+}
+
+function renderStudySession(container, deckId) {
+  const deck = decks.find((d) => d.id === deckId);
+  if (!deck) {
+    studyView = { mode: "gallery" };
+    renderStudy();
+    return;
+  }
+
+  refreshQueueIfNeeded(deckId);
+
+  const backButtonHtml = `<button class="back-btn" id="backToGalleryBtn">← До колод</button>`;
+
   if (studyQueue.length === 0) {
     container.innerHTML = `
-      ${deckSelectorHtml}
+      ${backButtonHtml}
       <div class="study-empty">
         <span class="big-emoji">✅</span>
-        <h2>На сьогодні все повторено!</h2>
+        <h2>«${escapeHtml(deck.name)}» — все повторено!</h2>
         <p>Повертайся завтра — або додай нові слова у вкладці «Колоди».</p>
       </div>
     `;
-    bindStudyDeckSelect();
+    bindBackToGallery();
     return;
   }
 
@@ -308,12 +352,13 @@ function renderStudy() {
   const card = cards.find((c) => c.id === cardId);
   if (!card) {
     studyQueue.splice(currentCardIndex, 1);
-    renderStudy();
+    renderStudySession(container, deckId);
     return;
   }
 
   container.innerHTML = `
-    ${deckSelectorHtml}
+    ${backButtonHtml}
+    <p class="session-deck-name">${escapeHtml(deck.name)}</p>
 
     <div class="card-stage">
       <div class="flip-card ${isFlipped ? "flipped" : ""}" id="flipCard">
@@ -340,11 +385,11 @@ function renderStudy() {
     }
   `;
 
-  bindStudyDeckSelect();
+  bindBackToGallery();
 
   document.getElementById("flipCard").addEventListener("click", () => {
     isFlipped = !isFlipped;
-    renderStudy();
+    renderStudySession(document.getElementById("tabContent"), deckId);
   });
 
   if (isFlipped) {
@@ -366,13 +411,12 @@ function renderStudy() {
   }
 }
 
-function bindStudyDeckSelect() {
-  const select = document.getElementById("studyDeckSelect");
-  if (!select) return;
-  select.addEventListener("change", () => {
-    studyDeckId = select.value;
+function bindBackToGallery() {
+  const btn = document.getElementById("backToGalleryBtn");
+  if (!btn) return;
+  btn.addEventListener("click", () => {
+    studyView = { mode: "gallery" };
     studyQueue = [];
-    currentCardIndex = 0;
     isFlipped = false;
     render();
   });
@@ -459,6 +503,11 @@ function renderDeckList(container) {
       cards = cards.filter((c) => c.deckId !== deckId);
       saveDecks(decks);
       saveCards(cards);
+
+      // Якщо саме цю колоду проходили в сесії навчання — повертаємось до галереї
+      if (studyView.mode === "session" && studyView.deckId === deckId) {
+        studyView = { mode: "gallery" };
+      }
       studyQueue = [];
       render();
     });
