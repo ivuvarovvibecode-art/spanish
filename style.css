@@ -296,6 +296,21 @@ body {
   letter-spacing: 1px;
 }
 
+.direction-badge {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: rgba(18,33,61,0.08);
+  color: var(--ink);
+  opacity: 0.6;
+}
+
 .card-translation {
   font-family: var(--font-display);
   font-size: 26px;
@@ -537,6 +552,41 @@ body {
 }
 
 .back-btn:hover { text-decoration: underline; }
+
+.backup-section {
+  background: var(--navy-elevated);
+  border-radius: var(--radius-lg);
+  padding: 18px;
+  margin-top: 20px;
+}
+
+.backup-section h3 {
+  font-family: var(--font-display);
+  margin: 0 0 8px;
+  font-size: 16px;
+}
+
+.backup-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.secondary-btn {
+  flex: 1;
+  background: transparent;
+  border: 1px solid rgba(232,163,61,0.4);
+  color: var(--gold);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-weight: 700;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.secondary-btn:hover {
+  background: rgba(232,163,61,0.1);
+}
 
 .card-row {
   background: var(--navy-elevated);

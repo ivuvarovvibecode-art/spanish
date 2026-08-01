@@ -131,6 +131,57 @@ function saveMeta(meta) {
   localStorage.setItem(META_KEY, JSON.stringify(meta));
 }
 
+// ---------- Експорт / імпорт (перенесення між пристроями) ----------
+function exportData() {
+  const payload = {
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    decks,
+    cards,
+  };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `espanol-srs-backup-${todayStr(0)}.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+function importDataFromFile(file) {
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    let data;
+    try {
+      data = JSON.parse(e.target.result);
+      if (!Array.isArray(data.decks) || !Array.isArray(data.cards)) {
+        throw new Error("bad format");
+      }
+    } catch (err) {
+      alert("Не вдалося прочитати файл. Перевір, що це саме файл резервної копії Español SRS (.json).");
+      return;
+    }
+
+    // Додаємо тільки те, чого ще немає (за id) — щоб не задвоїти прогрес,
+    // якщо той самий файл імпортується повторно.
+    const existingDeckIds = new Set(decks.map((d) => d.id));
+    const newDecks = data.decks.filter((d) => !existingDeckIds.has(d.id));
+    decks = decks.concat(newDecks);
+
+    const existingCardIds = new Set(cards.map((c) => c.id));
+    const newCards = data.cards.filter((c) => !existingCardIds.has(c.id));
+    cards = cards.concat(newCards);
+
+    saveDecks(decks);
+    saveCards(cards);
+    render();
+    alert(`Імпортовано ${newDecks.length} нових колод і ${newCards.length} нових карток.`);
+  };
+  reader.readAsText(file);
+}
+
 function bumpStreak() {
   const meta = loadMeta();
   const today = todayStr(0);
@@ -199,6 +250,7 @@ let currentTab = "study";
 //         або { mode: "session", deckId } — сама сесія навчання
 let studyView = { mode: "gallery" };
 let studyQueue = [];
+let studyDirections = {}; // { cardId: "es-uk" | "uk-es" } — напрямок питання для цієї сесії
 let currentCardIndex = 0;
 let isFlipped = false;
 
@@ -214,10 +266,25 @@ function dueCards(scopeId) {
   return cardsInScope(scopeId).filter((c) => c.dueDate <= today);
 }
 
+function shuffleArray(arr) {
+  const result = arr.slice();
+  for (let i = result.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [result[i], result[j]] = [result[j], result[i]];
+  }
+  return result;
+}
+
 function refreshQueueIfNeeded(deckId) {
   if (studyQueue.length === 0) {
-    studyQueue = dueCards(deckId).map((c) => c.id);
+    studyQueue = shuffleArray(dueCards(deckId).map((c) => c.id));
     currentCardIndex = 0;
+    studyDirections = {};
+    studyQueue.forEach((id) => {
+      // Періодично питаємо у зворотному напрямку (українською → іспанською),
+      // щоб не завчити просто порядок карток, а справді пригадувати слово.
+      studyDirections[id] = Math.random() < 0.5 ? "es-uk" : "uk-es";
+    });
   }
 }
 
@@ -316,6 +383,7 @@ function renderStudyGallery(container) {
     btn.addEventListener("click", () => {
       studyView = { mode: "session", deckId: btn.dataset.id };
       studyQueue = [];
+      studyDirections = {};
       currentCardIndex = 0;
       isFlipped = false;
       render();
@@ -356,6 +424,13 @@ function renderStudySession(container, deckId) {
     return;
   }
 
+  const direction = studyDirections[card.id] || "es-uk";
+  const isReversed = direction === "uk-es";
+  const frontText = isReversed ? card.back : card.front;
+  const backText = isReversed ? card.front : card.back;
+  const frontHint = isReversed ? "Згадай іспанською і натисни" : "Натисни, щоб перевернути";
+  const directionBadge = isReversed ? "УКР → ІСП" : "ІСП → УКР";
+
   container.innerHTML = `
     ${backButtonHtml}
     <p class="session-deck-name">${escapeHtml(deck.name)}</p>
@@ -363,11 +438,12 @@ function renderStudySession(container, deckId) {
     <div class="card-stage">
       <div class="flip-card ${isFlipped ? "flipped" : ""}" id="flipCard">
         <div class="card-face card-front">
-          <span class="card-word">${escapeHtml(card.front)}</span>
-          <span class="card-hint">Натисни, щоб перевернути</span>
+          <span class="direction-badge">${directionBadge}</span>
+          <span class="card-word">${escapeHtml(frontText)}</span>
+          <span class="card-hint">${frontHint}</span>
         </div>
         <div class="card-face card-back">
-          <span class="card-translation">${escapeHtml(card.back)}</span>
+          <span class="card-translation">${escapeHtml(backText)}</span>
           ${card.example ? `<span class="card-example">${escapeHtml(card.example)}</span>` : ""}
         </div>
       </div>
@@ -417,6 +493,7 @@ function bindBackToGallery() {
   btn.addEventListener("click", () => {
     studyView = { mode: "gallery" };
     studyQueue = [];
+    studyDirections = {};
     isFlipped = false;
     render();
   });
@@ -469,7 +546,32 @@ function renderDeckList(container) {
               .join("")
       }
     </div>
+
+    <div class="backup-section">
+      <h3>Перенесення між пристроями</h3>
+      <p class="bulk-hint">
+        Вивантаж дані з цього пристрою у файл — і імпортуй його на іншому
+        (наприклад, на телефоні), щоб не вводити все заново.
+      </p>
+      <div class="backup-actions">
+        <button class="secondary-btn" id="exportBtn">⬇ Експортувати дані</button>
+        <button class="secondary-btn" id="importBtn">⬆ Імпортувати дані</button>
+        <input type="file" id="importFileInput" accept="application/json" style="display:none" />
+      </div>
+    </div>
   `;
+
+  document.getElementById("exportBtn").addEventListener("click", exportData);
+
+  const importFileInput = document.getElementById("importFileInput");
+  document.getElementById("importBtn").addEventListener("click", () => {
+    importFileInput.click();
+  });
+  importFileInput.addEventListener("change", () => {
+    const file = importFileInput.files[0];
+    if (file) importDataFromFile(file);
+    importFileInput.value = "";
+  });
 
   document.getElementById("addDeckBtn").addEventListener("click", () => {
     const nameInput = document.getElementById("newDeckName");
@@ -509,6 +611,7 @@ function renderDeckList(container) {
         studyView = { mode: "gallery" };
       }
       studyQueue = [];
+      studyDirections = {};
       render();
     });
   });
